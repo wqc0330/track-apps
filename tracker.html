@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>运动轨迹记录</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0f1115;
+    color: #e7ecf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  header { display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .5px; }
+  .status {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    background: #1c212b; color: #8b98a9;
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  }
+  .status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .status.on { color: #3ddc84; background: rgba(61,220,132,.12); }
+  .status.on .dot { animation: pulse 1.2s infinite; }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: .35; transform: scale(.75); }
+  }
+
+  .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+  .stat {
+    background: #161a22; border: 1px solid #232a36; border-radius: 10px;
+    padding: 8px 4px; text-align: center;
+  }
+  .stat b {
+    display: block; font-size: 16px; font-weight: 600; color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat span { font-size: 11px; color: #7c8798; }
+
+  #map {
+    flex: 1; width: 100%; min-height: 160px; display: block;
+    background: #131720; border: 1px solid #232a36; border-radius: 12px;
+  }
+
+  .coords { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; font-size: 12px; color: #8b98a9; }
+  .coords div { background: #161a22; border: 1px solid #232a36; border-radius: 8px; padding: 6px 8px; }
+  .coords b { color: #dfe7f1; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .buttons { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+  button {
+    font-family: inherit; font-size: 13px; padding: 11px 2px;
+    border-radius: 10px; border: 1px solid #2b3441; background: #1b212b;
+    color: #dfe7f1; cursor: pointer; transition: transform .12s, opacity .12s;
+  }
+  button:active:not(:disabled) { transform: scale(.96); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button.primary { background: #3ddc84; border-color: #3ddc84; color: #06210f; font-weight: 600; }
+  button.danger { color: #ff8a8a; border-color: #3a2a2e; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 84px; transform: translate(-50%, 10px);
+    background: rgba(22,27,36,.97); border: 1px solid #2b3441;
+    padding: 9px 16px; border-radius: 999px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: .25s; white-space: nowrap;
+    max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+
+  <header>
+    <h1>运动轨迹记录</h1>
+    <div class="status" id="status">
+      <span class="dot"></span><span id="statusText">未开始</span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><b id="sDist">0 m</b><span>距离</span></div>
+    <div class="stat"><b id="sDur">00:00</b><span>时长</span></div>
+    <div class="stat"><b id="sCnt">0</b><span>轨迹点</span></div>
+    <div class="stat"><b id="sSpd">0.0</b><span>速度 km/h</span></div>
+  </div>
+
+  <canvas id="map"></canvas>
+
+  <div class="coords">
+    <div>纬度 <b id="cLat">--</b></div>
+    <div>经度 <b id="cLng">--</b></div>
+    <div>精度 <b id="cAcc">--</b></div>
+  </div>
+
+  <div class="buttons">
+    <button class="primary" id="btnStart">开始记录</button>
+    <button id="btnStop" disabled>暂停</button>
+    <button id="btnCopy">复制JSON</button>
+    <button class="danger" id="btnClear">清空</button>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============ 常量 & 元素 ============ */
+  const STORAGE_KEY = 'motion_track_session_v1';
+  const MAX_ACCURACY = 100;     // 精度差于 100m 的定位点丢弃
+  const MIN_MOVE_DIST = 2;      // 移动小于 2m 且间隔<15s 视为抖动，跳过
+  const MIN_MOVE_GAP_MS = 15000;
+
+  const canvas   = document.getElementById('map');
+  const ctx      = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const statusTx = document.getElementById('statusText');
+  const sDist    = document.getElementById('sDist');
+  const sDur     = document.getElementById('sDur');
+  const sCnt     = document.getElementById('sCnt');
+  const sSpd     = document.getElementById('sSpd');
+  const cLat     = document.getElementById('cLat');
+  const cLng     = document.getElementById('cLng');
+  const cAcc     = document.getElementById('cAcc');
+  const btnStart = document.getElementById('btnStart');
+  const btnStop  = document.getElementById('btnStop');
+  const btnCopy  = document.getElementById('btnCopy');
+  const btnClear = document.getElementById('btnClear');
+  const toastEl  = document.getElementById('toast');
+
+  /* ============ 状态 ============ */
+  const state = {
+    points: [],        // [{lat,lng,t,acc,alt?,spd?,hdg?}]
+    startTime: null,   // 本次记录开始时间戳
+    totalDistance: 0,  // 累计距离（米）
+    recording: false,
+    watchId: null
+  };
+
+  /* ============ 工具函数 ============ */
+  function haversine(a, b) {
+    const R = 6371000;
+    const rad = Math.PI / 180;
+    const p1 = a.lat * rad, p2 = b.lat * rad;
+    const dp = p2 - p1;
+    const dl = (b.lng - a.lng) * rad;
+    const s = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+  }
+
+  function fmtDuration(ms) {
+    let s = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    const pad = n => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(ss) : pad(m) + ':' + pad(ss);
+  }
+
+  let toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
+  }
+
+  function setStatus(text, on) {
+    statusTx.textContent = text;
+    statusEl.classList.toggle('on', !!on);
+  }
+
+  /* ============ 存储（sessionStorage：同一标签页会话不丢） ============ */
+  function save() {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+        startTime: state.startTime,
+        updatedAt: Date.now(),
+        points: state.points
+      }));
+    } catch (e) {
+      console.warn('保存失败', e);
+    }
+  }
+
+  function restore() {
+    let raw = null;
+    try { raw = sessionStorage.getItem(STORAGE_KEY); } catch (e) { return; }
+    if (!raw) return;
+    try {
+      const d = JSON.parse(raw);
+      if (Array.isArray(d.points)) state.points = d.points;
+      if (d.startTime) state.startTime = d.startTime;
+      state.totalDistance = calcDistance(state.points);
+    } catch (e) {
+      console.warn('恢复失败', e);
+    }
+  }
+
+  function calcDistance(pts) {
+    let d = 0;
+    for (let i = 1; i < pts.length; i++) d += haversine(pts[i - 1], pts[i]);
+    return d;
+  }
+
+  /* ============ 定位 ============ */
+  function startRecording() {
+    if (state.recording) return;
+    if (!('geolocation' in navigator)) { toast('当前浏览器不支持定位'); return; }
+
+    if (!state.startTime) state.startTime = Date.now();
+    state.recording = true;
+    setStatus('记录中', true);
+    updateButtons();
+
+    state.watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+      enableHighAccuracy: true,
+      timeout: 20000,
+      maximumAge: 0
+    });
+
+    toast('开始记录轨迹');
+    updateStats();
+  }
+
+  function stopRecording(silent) {
+    if (state.watchId !== null) {
+      navigator.geolocation.clearWatch(state.watchId);
+      state.watchId = null;
+    }
+    const was = state.recording;
+    state.recording = false;
+    setStatus(state.points.length ? '已暂停' : '未开始', false);
+    updateButtons();
+    save();
+    if (was && !silent) toast('已暂停记录');
+  }
+
+  function onPosition(pos) {
+    const c = pos.coords;
+    const t = pos.timestamp || Date.now();
+
+    const p = {
+      lat: +c.latitude.toFixed(6),
+      lng: +c.longitude.toFixed(6),
+      t: t,
+      acc: (c.accuracy == null || isNaN(c.accuracy)) ? null : Math.round(c.accuracy)
+    };
+    if (c.altitude != null && !isNaN(c.altitude)) p.alt = +c.altitude.toFixed(1);
+    if (c.speed != null && !isNaN(c.speed) && c.speed >= 0) p.spd = +c.speed.toFixed(2);
+    if (c.heading != null && !isNaN(c.heading)) p.hdg = Math.round(c.heading);
+
+    renderCoords(p);
+
+    // 精度过滤
+    if (p.acc != null && p.acc > MAX_ACCURACY) {
+      setStatus('信号差 ±' + p.acc + 'm', state.recording);
+      return;
+    }
+
+    const last = state.points[state.points.length - 1];
+    if (last) {
+      const d = haversine(last, p);
+      if (d < MIN_MOVE_DIST && p.t - last.t < MIN_MOVE_GAP_MS) {
+        // 原地抖动，不记录，但仍刷新一下统计
+        updateStats();
+        return;
+      }
+      state.totalDistance += d;
+    }
+
+    if (!state.startTime) state.startTime = p.t;
+
+    state.points.push(p);
+    save();
+    render();
+    setStatus('记录中', true);
+  }
+
+  function onError(err) {
+    const map = { 1: '定位权限被拒绝', 2: '无法获取位置', 3: '定位超时' };
+    toast(map[err.code] || err.message || '定位失败');
+    if (err.code === 1) stopRecording(true);
+  }
+
+  /* ============ 渲染 ============ */
+  function renderCoords(p) {
+    if (!p) {
+      cLat.textContent = '--'; cLng.textContent = '--'; cAcc.textContent = '--';
+      return;
+    }
+    cLat.textContent = p.lat.toFixed(5);
+    cLng.textContent = p.lng.toFixed(5);
+    cAcc.textContent = p.acc != null ? '±' + p.acc + 'm' : '--';
+  }
+
+  function currentElapsed() {
+    if (!state.startTime) return 0;
+    if (state.recording) return Date.now() - state.startTime;
+    const last = state.points[state.points.length - 1];
+    return last ? Math.max(0, last.t - state.startTime) : 0;
+  }
+
+  function updateStats() {
+    const pts = state.points;
+    const dist = state.totalDistance;
+
+    sDist.textContent = dist >= 1000
+      ? (dist / 1000).toFixed(2) + ' km'
+      : Math.round(dist) + ' m';
+    sDur.textContent = fmtDuration(currentElapsed());
+    sCnt.textContent = pts.length;
+
+    // 速度：优先用 GPS 速度，否则用最后两点估算
+    let spd = 0;
+    const last = pts[pts.length - 1];
+    if (last && last.spd != null) {
+      spd = last.spd * 3.6;
+    } else if (pts.length >= 2) {
+      const a = pts[pts.length - 2], b = last;
+      const dt = (b.t - a.t) / 1000;
+      if (dt > 0.5) spd = (haversine(a, b) / dt) * 3.6;
+    }
+    sSpd.textContent = spd.toFixed(1);
+  }
+
+  function draw() {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.round(rect.width * dpr);
+    const H = Math.round(rect.height * dpr);
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W;
+      canvas.height = H;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = rect.width, h = rect.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // 背景网格
+    ctx.strokeStyle = 'rgba(255,255,255,0.045)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x < w; x += 40) { ctx.moveTo(Math.round(x) + .5, 0); ctx.lineTo(Math.round(x) + .5, h); }
+    for (let y = 0; y < h; y += 40) { ctx.moveTo(0, Math.round(y) + .5); ctx.lineTo(w, Math.round(y) + .5); }
+    ctx.stroke();
+
+    const pts = state.points;
+    if (pts.length === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('暂无轨迹数据', w / 2, h / 2);
+      return;
+    }
+
+    // 计算经纬度边界
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+    }
+
+    const latMid = (minLat + maxLat) / 2;
+    const cosLat = Math.max(0.01, Math.cos(latMid * Math.PI / 180));
+    const spanX = (maxLng - minLng) * cosLat;   // 经度方向（已做纬度校正）
+    const spanY = (maxLat - minLat);
+
+    const pad = 28;
+    const availW = Math.max(1, w - pad * 2);
+    const availH = Math.max(1, h - pad * 2);
+
+    let scale;
+    if (spanX < 1e-12 && spanY < 1e-12) {
+      scale = 0;                             // 单点/完全重合
+    } else {
+      const sx = spanX > 0 ? availW / spanX : Infinity;
+      const sy = spanY > 0 ? availH / spanY : Infinity;
+      scale = Math.min(sx, sy);
+      if (!isFinite(scale) || scale <= 0) scale = 0;
+      // 限制过度放大（两个点很近时不要放大到天际）
+      const MAX_SCALE = 4e5;
+      if (scale > MAX_SCALE) scale = MAX_SCALE;
+    }
+
+    const drawW = spanX * scale;
+    const drawH = spanY * scale;
+    const offX = (w - drawW) / 2;
+    const offY = (h - drawH) / 2;
+
+    const toX = lng => offX + (lng - minLng) * cosLat * scale;
+    const toY = lat => h - offY - (lat - minLat) * scale;
+
+    // 轨迹线
+    if (pts.length > 1) {
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      // 外发光
+      ctx.strokeStyle = 'rgba(61,220,132,0.18)';
+      ctx.lineWidth = 10;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const x = toX(pts[i].lng), y = toY(pts[i].lat);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // 主线
+      ctx.strokeStyle = '#3ddc84';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const x = toX(pts[i].lng), y = toY(pts[i].lat);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // 起点
+    const first = pts[0];
+    ctx.beginPath();
+    ctx.arc(toX(first.lng), toY(first.lat), 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#3ddc84';
+    ctx.fill();
+    ctx.strokeStyle = '#0f1115';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 终点
+    const last = pts[pts.length - 1];
+    const ex = toX(last.lng), ey = toY(last.lat);
+    ctx.beginPath();
+    ctx.arc(ex, ey, 6.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff5c5c';
+    ctx.fill();
+    ctx.strokeStyle = '#0f1115';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 当前点脉冲环
+    if (state.recording) {
+      ctx.beginPath();
+      ctx.arc(ex, ey, 12, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,92,92,.45)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  function render() {
+    draw();
+    updateStats();
+    updateButtons();
+  }
+
+  /* ============ 按钮状态 ============ */
+  function updateButtons() {
+    btnStart.disabled = state.recording;
+    btnStop.disabled = !state.recording;
+    btnCopy.disabled = state.points.length === 0;
+    btnClear.disabled = false;
+  }
+
+  /* ============ 导出 JSON ============ */
+  function buildExport() {
+    const pts = state.points;
+    const endTime = pts.length ? pts[pts.length - 1].t : state.startTime;
+    return {
+      sessionStart: state.startTime ? new Date(state.startTime).toISOString() : null,
+      sessionEnd: endTime ? new Date(endTime).toISOString() : null,
+      durationSeconds: (state.startTime && endTime)
+        ? Math.max(0, Math.round((endTime - state.startTime) / 1000)) : 0,
+      pointCount: pts.length,
+      totalDistanceMeters: Math.round(state.totalDistance * 10) / 10,
+      points: pts
+    };
+  }
+
+  async function copyJSON() {
+    if (state.points.length === 0) { toast('暂无轨迹可复制'); return; }
+    const text = JSON.stringify(buildExport(), null, 2);
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        throw new Error('no clipboard api');
+      }
+      toast('已复制 ' + state.points.length + ' 个轨迹点 ✓');
+    } catch (e) {
+      // 降级方案
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast(ok ? '已复制 ✓' : '复制失败，请手动选择');
+      } catch (err) {
+        toast('复制失败');
+      }
+    }
+  }
+
+  /* ============ 清空 ============ */
+  function clearAll() {
+    if (state.points.length &&
+        !confirm('确定要清空本次会话的所有轨迹数据吗？')) return;
+
+    stopRecording(true);
+    state.points = [];
+    state.startTime = null;
+    state.totalDistance = 0;
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    renderCoords(null);
+    setStatus('未开始', false);
+    render();
+    toast('已清空');
+  }
+
+  /* ============ 事件绑定 ============ */
+  btnStart.addEventListener('click', startRecording);
+  btnStop.addEventListener('click', () => stopRecording(false));
+  btnCopy.addEventListener('click', copyJSON);
+  btnClear.addEventListener('click', clearAll);
+
+  window.addEventListener('resize', draw);
+  window.addEventListener('orientationchange', () => setTimeout(draw, 300));
+
+  // 页面关闭前保存（sessionStorage 本身也会保留）
+  window.addEventListener('pagehide', save);
+
+  // 时长实时刷新
+  setInterval(() => {
+    if (state.recording) updateStats();
+  }, 1000);
+
+  /* ============ 初始化 ============ */
+  restore();
+  renderCoords(state.points.length ? state.points[state.points.length - 1] : null);
+  setStatus(state.points.length ? '已暂停（可继续）' : '未开始', false);
+  render();
+
+  if (state.points.length) {
+    toast('已恢复 ' + state.points.length + ' 个轨迹点');
+  }
+
+  // 非安全上下文提示
+  if (!window.isSecureContext && location.hostname !== 'localhost') {
+    setTimeout(() => toast('提示：定位需要 HTTPS 或 localhost'), 800);
+  }
+})();
+</script>
+</body>
+</html>

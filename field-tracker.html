@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>轨迹测绘仪 · Field Tracker</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root{
+    --paper:#F5F1E8; --paper2:#EDE8DC; --ink:#191712; --ink2:#6B6557;
+    --line:#D8D1BF; --accent:#E04A12; --accent-dk:#B93A0B; --danger:#B3261E;
+    --mono:'IBM Plex Mono','Courier New',monospace; --serif:'Noto Serif SC',serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:var(--mono); overflow:hidden;
+  }
+  /* 纸张噪点质感 */
+  body::before{
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:999; opacity:.35; mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ===== 顶栏（图纸标题栏） ===== */
+  header{
+    display:flex; justify-content:space-between; align-items:flex-end;
+    padding:14px 22px 12px; border-bottom:2px solid var(--ink);
+  }
+  .hd-left h1{font:900 26px/1 var(--serif); letter-spacing:.06em}
+  .hd-left .sub{font:500 10px/1 var(--mono); letter-spacing:.22em; color:var(--ink2); display:block; margin-top:6px}
+  .hd-right{display:flex; align-items:center; gap:18px}
+  .hd-meta{font:11px var(--mono); color:var(--ink2); letter-spacing:.08em}
+  .status{display:flex; align-items:center; gap:8px; font:600 11px var(--mono); letter-spacing:.14em;
+    border:1.5px solid var(--ink); padding:7px 12px; background:var(--paper)}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--ink2); flex:none}
+  .status.rec .dot{background:var(--accent); animation:blink 1.1s infinite}
+  .status.rec{color:var(--accent-dk); border-color:var(--accent-dk)}
+  .status.paused .dot{background:#C99A0A; animation:blink 2s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+
+  /* 图纸刻度尺 */
+  .ruler{height:11px; border-bottom:1.5px solid var(--ink); position:relative}
+  .ruler::before{content:''; position:absolute; left:0; right:0; bottom:0; height:100%;
+    background:
+      repeating-linear-gradient(90deg, var(--ink) 0 1px, transparent 1px 10px) bottom/100% 5px no-repeat,
+      repeating-linear-gradient(90deg, var(--ink) 0 1px, transparent 1px 50px) bottom/100% 10px no-repeat}
+
+  /* ===== 主布局 ===== */
+  main{display:grid; grid-template-columns:372px 1fr; height:calc(100% - 84px)}
+  #panel{border-right:2px solid var(--ink); overflow-y:auto; background:var(--paper)}
+  .sec{padding:16px 20px 18px; border-bottom:1px solid var(--line)}
+  .sec-head{display:flex; align-items:baseline; gap:10px; margin-bottom:14px}
+  .sec-head .no{font:600 11px var(--mono); color:var(--accent-dk)}
+  .sec-head .name{font:600 11px var(--mono); letter-spacing:.18em; color:var(--ink2)}
+
+  /* 01 定位读数 */
+  .coord{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px}
+  .coord label{font:10px var(--mono); letter-spacing:.14em; color:var(--ink2)}
+  .coord .val{font:600 23px/1.2 var(--mono); font-variant-numeric:tabular-nums; letter-spacing:.01em}
+  .meta4{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:14px;
+    border-top:1px dashed var(--line); padding-top:12px}
+  .meta4 label{display:block; font:9px var(--mono); letter-spacing:.12em; color:var(--ink2); margin-bottom:3px}
+  .meta4 b{font:500 12px var(--mono); font-variant-numeric:tabular-nums}
+  #errBar{margin-top:12px; background:var(--accent); color:#fff; font:12px/1.5 var(--mono); padding:9px 12px}
+  #seekBar{margin-top:12px; font:12px var(--mono); color:var(--ink2); animation:blink 1.6s infinite}
+
+  /* 按钮（印刷硬阴影风格） */
+  .btn{
+    font:500 13px/1 var(--mono); letter-spacing:.08em; padding:12px 14px;
+    border:1.5px solid var(--ink); background:var(--paper); color:var(--ink);
+    cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    transition:transform .12s, box-shadow .12s;
+  }
+  .btn svg{width:14px; height:14px; flex:none}
+  .btn:hover:not(:disabled){transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--ink)}
+  .btn:active:not(:disabled){transform:translate(0,0); box-shadow:none}
+  .btn:disabled{opacity:.35; cursor:not-allowed}
+  .btn-primary{background:var(--accent); border-color:var(--accent-dk); color:#fff}
+  .btn-primary:hover:not(:disabled){box-shadow:3px 3px 0 var(--accent-dk)}
+  .btn.wide{width:100%}
+  .btn.danger{color:var(--danger); border-color:var(--danger)}
+  .btn.danger.armed{background:var(--danger); color:#fff}
+  .ctrl-row{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px}
+  #copyBtn{margin-top:12px}
+  #clearBtn{margin-top:8px}
+
+  .switch{display:flex; align-items:center; gap:10px; font:12px var(--mono); color:var(--ink2); cursor:pointer; user-select:none}
+  .switch input{appearance:none; width:16px; height:16px; border:1.5px solid var(--ink); cursor:pointer; display:grid; place-items:center; background:transparent}
+  .switch input:checked{background:var(--accent); border-color:var(--accent-dk)}
+  .switch input:checked::after{content:''; width:8px; height:4px; border-left:2px solid #fff; border-bottom:2px solid #fff; transform:rotate(-45deg) translateY(-1px)}
+
+  /* 03 统计 */
+  .stats{display:grid; grid-template-columns:repeat(3,1fr); border:1.5px solid var(--ink); margin-bottom:4px}
+  .stats>div{padding:10px 6px; text-align:center}
+  .stats>div+div{border-left:1px solid var(--line)}
+  .stats b{display:block; font:600 17px var(--mono); font-variant-numeric:tabular-nums; margin-bottom:4px}
+  .stats label{font:9px var(--mono); letter-spacing:.14em; color:var(--ink2)}
+  .note{font:10px/1.7 var(--mono); color:var(--ink2); margin-top:10px}
+
+  /* 04 日志 */
+  #log{list-style:none; max-height:220px; overflow-y:auto; font:11.5px var(--mono)}
+  #log li{display:flex; align-items:baseline; gap:8px; padding:6px 0; border-bottom:1px dashed var(--line); font-variant-numeric:tabular-nums}
+  #log b{font-weight:600; color:var(--ink2); min-width:38px}
+  #log b.tag-wp{color:var(--accent-dk)}
+  #log span.c{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  #log i{font-style:normal; color:var(--ink2); font-size:10.5px; white-space:nowrap}
+  #logEmpty{font:11.5px/1.8 var(--mono); color:var(--ink2); padding:6px 0}
+
+  /* ===== 地图 ===== */
+  #mapwrap{position:relative}
+  #map{height:100%; background:#E8E4DA}
+  .leaflet-container{font:11px var(--mono)}
+  .leaflet-control-attribution{background:rgba(245,241,232,.85)!important; color:var(--ink2); font:10px var(--mono)}
+  .leaflet-bar a{background:var(--paper)!important; color:var(--ink)!important; border:1px solid var(--line)!important}
+  .pulse-dot{animation:pulse 1.7s ease-out infinite; transform-box:fill-box; transform-origin:center}
+  @keyframes pulse{0%{transform:scale(.5); opacity:.85}100%{transform:scale(2.6); opacity:0}}
+  .wp-pin{width:22px; height:22px; border-radius:50%; background:var(--ink); color:var(--paper);
+    font:600 10px/18px var(--mono); text-align:center; border:2px solid var(--paper); box-shadow:0 0 0 1.5px var(--ink)}
+
+  /* toast */
+  #toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(16px);
+    background:var(--ink); color:var(--paper); font:12.5px var(--mono); letter-spacing:.05em;
+    padding:11px 20px; opacity:0; pointer-events:none; transition:.28s; z-index:1000}
+  #toast.show{opacity:1; transform:translateX(-50%)}
+
+  /* 滚动条 */
+  ::-webkit-scrollbar{width:8px; height:8px}
+  ::-webkit-scrollbar-thumb{background:var(--line); border:2px solid var(--paper)}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  @media (max-width:920px){
+    body{overflow:auto}
+    main{grid-template-columns:1fr; height:auto}
+    #panel{border-right:none; order:2; overflow:visible}
+    #mapwrap{order:1; height:52vh; border-bottom:2px solid var(--ink)}
+    header{padding:12px 16px 10px}
+    .hd-left h1{font-size:20px}
+    .hd-meta{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd-left">
+    <h1>轨迹测绘仪</h1>
+    <span class="sub">FIELD TRACKER / GPS RECORDER</span>
+  </div>
+  <div class="hd-right">
+    <span class="hd-meta" id="dateStr"></span>
+    <div class="status idle" id="statusBadge"><span class="dot"></span><span id="statusText">待命 STANDBY</span></div>
+  </div>
+</header>
+<div class="ruler"></div>
+
+<main>
+  <aside id="panel">
+
+    <section class="sec">
+      <div class="sec-head"><span class="no">01</span><span class="name">定位读数 · POSITION</span></div>
+      <div class="coord"><label>纬度 LAT</label><div class="val" id="latVal">--.------°</div></div>
+      <div class="coord"><label>经度 LNG</label><div class="val" id="lngVal">--.------°</div></div>
+      <div class="meta4">
+        <div><label>海拔 ALT</label><b id="altVal">--</b></div>
+        <div><label>精度 ACC</label><b id="accVal">--</b></div>
+        <div><label>速度 SPD</label><b id="spdVal">--</b></div>
+        <div><label>更新 UPD</label><b id="updVal">--:--:--</b></div>
+      </div>
+      <div id="seekBar">正在搜索卫星信号……</div>
+      <div id="errBar" hidden></div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><span class="no">02</span><span class="name">记录控制 · CONTROL</span></div>
+      <div class="ctrl-row">
+        <button id="mainBtn" class="btn btn-primary"></button>
+        <button id="wpBtn" class="btn" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h12l-3.5 4L17 12H5"/></svg>
+          <span>打点</span>
+        </button>
+      </div>
+      <label class="switch"><input type="checkbox" id="followChk" checked><span>地图自动跟随当前位置</span></label>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><span class="no">03</span><span class="name">会话数据 · DATA</span></div>
+      <div class="stats">
+        <div><b id="cntVal">0</b><label>轨迹点</label></div>
+        <div><b id="distVal">0 m</b><label>总距离</label></div>
+        <div><b id="durVal">00:00:00</b><label>记录时长</label></div>
+      </div>
+      <button id="copyBtn" class="btn wide">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H16"/></svg>
+        <span>复制 JSON</span>
+      </button>
+      <button id="clearBtn" class="btn wide danger">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9.5 7V4h5v3M6.5 7l1 13.5h9l1-13.5"/></svg>
+        <span>清除轨迹</span>
+      </button>
+      <p class="note">数据以 JSON 存于 sessionStorage：同一会话内刷新页面不丢失，关闭标签页后自动清除。</p>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head"><span class="no">04</span><span class="name">轨迹日志 · LOG</span></div>
+      <ul id="log"></ul>
+      <div id="logEmpty">暂无记录——点击「开始记录」后，<br>每一个定位点都将写入此处。</div>
+    </section>
+
+  </aside>
+
+  <section id="mapwrap"><div id="map"></div></section>
+</main>
+
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  const KEY = 'field-tracker-session';
+  const $ = id => document.getElementById(id);
+
+  const state = {
+    status: 'idle',          // idle 待命 | recording 记录中 | paused 暂停
+    points: [],              // 轨迹点 {lat,lng,t,accuracy,altitude,speed}
+    waypoints: [],           // 打点 {n,lat,lng,t}
+    startedAt: null,         // 本段记录起始时间戳
+    elapsedMs: 0,            // 累计记录时长
+    resumeAt: null,          // 本次「继续」的时刻
+    totalDist: 0,            // 累计距离（米）
+    follow: true,
+    centered: false,
+    lastPos: null,           // 最近一次定位原始数据
+  };
+
+  /* ---------- 工具 ---------- */
+  const rad = d => d * Math.PI / 180;
+  function haversine(a, b){ // 两点球面距离（米）
+    const R = 6371000;
+    const s = Math.sin(rad(b.lat - a.lat))/2 ** 2 +
+              Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) *
+              Math.sin(rad(b.lng - a.lng))/2 ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  }
+  const fmtDist = m => m < 1000 ? m.toFixed(0) + ' m' : (m/1000).toFixed(2) + ' km';
+  function fmtDur(ms){
+    const s = Math.floor(ms/1000);
+    return [Math.floor(s/3600), Math.floor(s%3600/60), s%60]
+      .map(n => String(n).padStart(2,'0')).join(':');
+  }
+  const fmtTime = t => new Date(t).toLocaleTimeString('zh-CN', {hour12:false});
+
+  let toastTimer;
+  function toast(msg){
+    const el = $('toast');
+    el.textContent = msg; el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+  }
+
+  /* ---------- 持久化（sessionStorage） ---------- */
+  function persist(){
+    try{
+      sessionStorage.setItem(KEY, JSON.stringify({
+        points: state.points,
+        waypoints: state.waypoints,
+        startedAt: state.startedAt,
+        elapsedMs: Math.round(currentElapsed()),
+        savedAt: Date.now()
+      }));
+    }catch(e){ /* 存储不可用时静默降级，仅内存记录 */ }
+  }
+  function loadSession(){
+    try{
+      const raw = sessionStorage.getItem(KEY);
+      if(!raw) return;
+      const d = JSON.parse(raw);
+      state.points = d.points || [];
+      state.waypoints = d.waypoints || [];
+      state.startedAt = d.startedAt || null;
+      state.elapsedMs = d.elapsedMs || 0;
+      state.status = 'paused'; state.resumeAt = null; // 恢复后置为暂停，由用户手动继续
+      // 重算总距离
+      state.totalDist = 0;
+      for(let i = 1; i < state.points.length; i++)
+        state.totalDist += haversine(state.points[i-1], state.points[i]);
+      if(state.points.length)
+        setTimeout(() => toast('已从会话缓存恢复 ' + state.points.length + ' 个轨迹点'), 400);
+    }catch(e){ /* 数据损坏则忽略 */ }
+  }
+
+  /* ---------- 地图 ---------- */
+  const map = L.map('map', { zoomControl:false, maxZoom:19 });
+  L.control.zoom({ position:'topright' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    subdomains:'abcd', maxZoom:19,
+    attribution:'&copy; OpenStreetMap &copy; CARTO'
+  }).addTo(map);
+  map.setView([39.9042, 116.4074], 11);
+
+  // 白色衬边 + 橙色主线的双层轨迹
+  const trackGlow = L.polyline([], { color:'#FFFDF8', weight:7, opacity:.9, lineCap:'round' }).addTo(map);
+  const trackLine = L.polyline([], { color:'#E04A12', weight:3, opacity:.95, lineCap:'round' }).addTo(map);
+  const liveDot   = L.circleMarker([0,0], { radius:6, color:'#FFFDF8', weight:2.5, fillColor:'#E04A12', fillOpacity:1 }).addTo(map);
+  const pulseDot  = L.circleMarker([0,0], { radius:11, fillColor:'#E04A12', fillOpacity:.4, stroke:false, className:'pulse-dot' }).addTo(map);
+
+  function drawTrack(){
+    const ll = state.points.map(p => [p.lat, p.lng]);
+    trackGlow.setLatLngs(ll);
+    trackLine.setLatLngs(ll);
+  }
+  function addWaypointMarkers(){
+    state.waypoints.forEach(w => {
+      L.marker([w.lat, w.lng], {
+        icon: L.divIcon({ className:'', html:'<div class="wp-pin">' + w.n + '</div>', iconSize:[22,22], iconAnchor:[11,11] })
+      }).addTo(map);
+    });
+  }
+  // 用户手动拖图时自动取消跟随，避免被拉回
+  map.on('dragstart', () => {
+    if(state.follow){ state.follow = false; $('followChk').checked = false; }
+  });
+  $('followChk').addEventListener('change', e => state.follow = e.target.checked);
+
+  /* ---------- 定位 ---------- */
+  function onPos(pos){
+    state.lastPos = pos;
+    $('seekBar').hidden = true; $('errBar').hidden = true;
+    const c = pos.coords, ll = [c.latitude, c.longitude];
+    $('latVal').textContent = c.latitude.toFixed(6) + '°';
+    $('lngVal').textContent = c.longitude.toFixed(6) + '°';
+    $('altVal').textContent = c.altitude == null ? '--' : c.altitude.toFixed(0) + ' m';
+    $('accVal').textContent = '±' + c.accuracy.toFixed(0) + ' m';
+    $('spdVal').textContent = c.speed == null ? '--' : c.speed.toFixed(1) + ' m/s';
+    $('updVal').textContent = fmtTime(pos.timestamp);
+
+    liveDot.setLatLng(ll); pulseDot.setLatLng(ll);
+    if(!state.centered){ map.setView(ll, 16); state.centered = true; }
+    else if(state.follow) map.panTo(ll, { animate:true, duration:.6 });
+
+    if(state.status === 'recording') addPoint(pos);
+  }
+  function onErr(err){
+    $('seekBar').hidden = true;
+    const bar = $('errBar'); bar.hidden = false;
+    const msgs = {
+      1: '定位权限被拒绝。请在浏览器地址栏的位置权限中允许访问后重试。',
+      2: '暂时无法获取位置信息，请检查设备定位服务是否开启。',
+      3: '定位超时，正在继续尝试……'
+    };
+    bar.textContent = msgs[err.code] || ('定位出错：' + err.message);
+  }
+  function startWatch(){
+    if(!('geolocation' in navigator)){
+      $('seekBar').hidden = true;
+      const bar = $('errBar'); bar.hidden = false;
+      bar.textContent = '当前浏览器不支持 Geolocation 定位，无法记录轨迹。';
+      return;
+    }
+    navigator.geolocation.watchPosition(onPos, onErr, {
+      enableHighAccuracy: true, maximumAge: 2000, timeout: 20000
+    });
+  }
+
+  /* ---------- 记录 ---------- */
+  function addPoint(pos){
+    const c = pos.coords;
+    const pt = {
+      lat: +c.latitude.toFixed(6),
+      lng: +c.longitude.toFixed(6),
+      t: new Date(pos.timestamp).toISOString(),
+      accuracy: +c.accuracy.toFixed(1),
+      altitude: c.altitude == null ? null : +c.altitude.toFixed(1),
+      speed: c.speed == null ? null : +c.speed.toFixed(2)
+    };
+    if(state.points.length)
+      state.totalDist += haversine(state.points[state.points.length-1], pt);
+    state.points.push(pt);
+    persist(); renderStats(); drawTrack();
+    appendLog({ type:'pt', p:pt, i:state.points.length - 1 });
+  }
+
+  const ICON_PLAY  = '<svg viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20" fill="currentColor"/></svg>';
+  const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4.5" height="16"/><rect x="13.5" y="4" width="4.5" height="16"/></svg>';
+
+  function syncUI(){
+    const badge = $('statusBadge'), mainBtn = $('mainBtn');
+    badge.className = 'status ' + (state.status === 'recording' ? 'rec' : state.status === 'paused' ? 'paused' : 'idle');
+    $('statusText').textContent =
+      state.status === 'recording' ? '记录中 REC' :
+      state.status === 'paused'    ? '已暂停 HOLD'  : '待命 STANDBY';
+    if(state.status === 'recording'){
+      mainBtn.innerHTML = ICON_PAUSE + '<span>暂停记录</span>';
+    }else{
+      mainBtn.innerHTML = ICON_PLAY + '<span>' + (state.status === 'paused' ? '继续记录' : '开始记录') + '</span>';
+    }
+    $('wpBtn').disabled = state.status !== 'recording';
+  }
+
+  $('mainBtn').addEventListener('click', () => {
+    if(state.status === 'recording'){                    // → 暂停
+      state.elapsedMs += Date.now() - state.resumeAt;
+      state.status = 'paused'; state.resumeAt = null;
+      toast('记录已暂停');
+    }else{                                               // 待命/暂停 → 记录中
+      if(state.startedAt == null) state.startedAt = Date.now();
+      state.resumeAt = Date.now();
+      state.status = 'recording';
+      toast(state.points.length ? '继续记录，轨迹将追加到当前会话' : '开始记录轨迹');
+      if(state.lastPos) addPoint(state.lastPos);         // 立即写入当前所在位置
+    }
+    liveDot.setStyle({ fillColor: state.status === 'recording' ? '#E04A12' : '#8A8578' });
+    pulseDot.setStyle({ fillColor: state.status === 'recording' ? '#E04A12' : '#8A8578' });
+    persist(); syncUI(); renderStats();
+  });
+
+  $('wpBtn').addEventListener('click', () => {
+    if(!state.lastPos){ toast('尚未获得定位信号，无法打点'); return; }
+    const c = state.lastPos.coords;
+    const w = {
+      n: state.waypoints.length + 1,
+      lat: +c.latitude.toFixed(6), lng: +c.longitude.toFixed(6),
+      t: new Date().toISOString()
+    };
+    state.waypoints.push(w);
+    L.marker([w.lat, w.lng], {
+      icon: L.divIcon({ className:'', html:'<div class="wp-pin">' + w.n + '</div>', iconSize:[22,22], iconAnchor:[11,11] })
+    }).addTo(map);
+    appendLog({ type:'wp', w });
+    persist();
+    toast('已打点标记 #' + w.n);
+  });
+
+  /* ---------- 统计与日志 ---------- */
+  function currentElapsed(){
+    return state.elapsedMs + (state.status === 'recording' && state.resumeAt ? Date.now() - state.resumeAt : 0);
+  }
+  function renderStats(){
+    $('cntVal').textContent = state.points.length;
+    $('distVal').textContent = fmtDist(state.totalDist);
+  }
+  function logItemHTML(e){
+    const time = fmtTime(e.t);
+    if(e.type === 'wp')
+      return '<b class="tag-wp">W' + String(e.w.n).padStart(2,'0') + '</b>' +
+             '<span class="c">' + e.w.lat.toFixed(6) + ', ' + e.w.lng.toFixed(6) + '</span>' +
+             '<i>打点 · ' + time + '</i>';
+    return '<b>#' + String(e.i + 1).padStart(3,'0') + '</b>' +
+           '<span class="c">' + e.p.lat.toFixed(6) + ', ' + e.p.lng.toFixed(6) + '</span>' +
+           '<i>±' + Math.round(e.p.accuracy) + 'm · ' + time + '</i>';
+  }
+  function appendLog(e){
+    $('logEmpty').hidden = true;
+    const li = document.createElement('li');
+    li.innerHTML = logItemHTML(e);
+    $('log').appendChild(li);
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+  function rebuildLog(){
+    $('log').innerHTML = '';
+    const events = [
+      ...state.points.map((p,i) => ({ type:'pt', p, i, t:p.t })),
+      ...state.waypoints.map(w => ({ type:'wp', w, t:w.t }))
+    ].sort((a,b) => new Date(a.t) - new Date(b.t));
+    events.forEach(appendLog);
+    $('logEmpty').hidden = events.length > 0;
+  }
+
+  /* ---------- 复制 JSON ---------- */
+  function buildJSON(){
+    return JSON.stringify({
+      session: {
+        startedAt: state.startedAt ? new Date(state.startedAt).toISOString() : null,
+        recordedPoints: state.points.length,
+        waypointCount: state.waypoints.length,
+        totalDistanceMeters: +state.totalDist.toFixed(1),
+        activeDurationMs: Math.round(currentElapsed()),
+        storage: 'sessionStorage',
+        exportedAt: new Date().toISOString()
+      },
+      points: state.points,
+      waypoints: state.waypoints
+    }, null, 2);
+  }
+  $('copyBtn').addEventListener('click', async () => {
+    const text = buildJSON();
+    try{
+      await navigator.clipboard.writeText(text);
+      toast('已复制 JSON（含 ' + state.points.length + ' 个轨迹点）');
+    }catch(e){
+      // 剪贴板 API 不可用时的降级方案
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); toast('已复制 JSON（含 ' + state.points.length + ' 个轨迹点）'); }
+      catch(_){ toast('复制失败，请检查浏览器权限'); }
+      ta.remove();
+    }
+  });
+
+  /* ---------- 清除（二次确认，不用弹窗） ---------- */
+  let armed = false, armTimer;
+  const clearBtn = $('clearBtn');
+  clearBtn.addEventListener('click', () => {
+    if(!armed){
+      armed = true;
+      clearBtn.classList.add('armed');
+      clearBtn.querySelector('span').textContent = '确认清除？';
+      armTimer = setTimeout(disarm, 3000);
+      return;
+    }
+    clearTimeout(armTimer); disarm();
+    state.points = []; state.waypoints = [];
+    state.startedAt = null; state.elapsedMs = 0; state.resumeAt = null;
+    state.totalDist = 0; state.status = 'idle';
+    persist(); syncUI(); renderStats(); drawTrack(); rebuildLog();
+    map.eachLayer(l => { if(l instanceof L.Marker) map.removeLayer(l); });
+    liveDot.setStyle({ fillColor:'#8A8578' }); pulseDot.setStyle({ fillColor:'#8A8578' });
+    toast('已清除本次会话轨迹');
+  });
+  function disarm(){
+    armed = false;
+    clearBtn.classList.remove('armed');
+    clearBtn.querySelector('span').textContent = '清除轨迹';
+  }
+
+  /* ---------- 初始化 ---------- */
+  $('dateStr').textContent = new Date().toLocaleDateString('zh-CN',
+    { year:'numeric', month:'2-digit', day:'2-digit', weekday:'long' });
+  loadSession();
+  syncUI(); renderStats(); rebuildLog(); drawTrack(); addWaypointMarkers();
+  if(state.points.length === 1){
+    map.setView([state.points[0].lat, state.points[0].lng], 16);
+  }else if(state.points.length > 1){
+    map.fitBounds(L.latLngBounds(state.points.map(p => [p.lat, p.lng])), { padding:[40,40] });
+  }
+  startWatch();
+  setInterval(() => { $('durVal').textContent = fmtDur(currentElapsed()); }, 500);
+})();
+</script>
+</body>
+</html>
