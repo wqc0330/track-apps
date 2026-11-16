@@ -148,9 +148,14 @@ button:disabled{opacity:.35;cursor:not-allowed}
    ============================================================ */
 const map = L.map('map', {zoomControl: true}).setView([30.0, 110.0], 4);
 
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-  maxZoom: 19,
-  attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom'
+// L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+//   maxZoom: 19,
+//   attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom'
+// }).addTo(map);
+// ========== 方案 A（推荐）：GeoQ 中国深蓝底图，免 Key，无偏移 ==========
+L.tileLayer('https://map.geoq.cn/arcgis/rest/services/ChinaOnlineStreetPurplishBlue/MapServer/tile/{z}/{y}/{x}', {
+  attribution: '© GeoQ / Esri China',
+  maxZoom: 18
 }).addTo(map);
 
 /* ================= 状态 ================= */
