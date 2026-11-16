@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>轨迹测绘仪 · FIELD TRACKER / GPS RECORDER</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#060907; --panel:#0b100c; --panel2:#0e1410; --line:#1c2a20;
+  --ink:#cfe3d2; --dim:#62805f; --faint:#3c5240;
+  --amber:#ffb300; --green:#3fe07f; --red:#ff5349;
+  --mono:"JetBrains Mono","SFMono-Regular",ui-monospace,Menlo,Consolas,"Courier New",monospace;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--mono);display:flex;flex-direction:column;overflow:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:999;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 1px,transparent 1px 3px)}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand h1{font-size:17px;letter-spacing:2px;color:var(--amber)}
+.brand p{font-size:10px;color:var(--dim);letter-spacing:3px;margin-top:2px}
+.hdr-right{margin-left:auto}
+.badge{font-size:10px;letter-spacing:2px;padding:4px 10px;border:1px solid var(--line);color:var(--dim)}
+.badge.rec{color:var(--red);border-color:var(--red);animation:blink 1.2s steps(2) infinite}
+@keyframes blink{50%{opacity:.35}}
+main{flex:1;display:flex;min-height:0}
+aside{width:370px;min-width:370px;border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:14px}
+.sec{border:1px solid var(--line);background:var(--panel2);padding:12px}
+.sec h2{font-size:11px;letter-spacing:2px;color:var(--dim);display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+.sec h2 .num{color:var(--amber)}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.cell{border:1px solid var(--line);padding:7px 9px;background:rgba(0,0,0,.25)}
+.cell label{display:block;font-size:9px;color:var(--dim);letter-spacing:1px}
+.cell b{display:block;font-size:13px;color:var(--amber);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gps{margin-left:auto;font-size:10px;letter-spacing:1px;color:var(--amber)}
+.gps.lock{color:var(--green)} .gps.err{color:var(--red)}
+#satMsg{margin-top:9px;font-size:11px;color:var(--amber);animation:blink 1.2s steps(2) infinite}
+#satMsg.ok{display:none}
+.row{display:flex;align-items:center;gap:8px;margin-top:10px}
+button{font-family:var(--mono);font-size:12px;letter-spacing:1px;color:var(--ink);
+  background:transparent;border:1px solid var(--faint);padding:9px 14px;cursor:pointer;transition:.15s}
+button:hover{border-color:var(--amber);color:var(--amber)}
+button.primary{border-color:var(--green);color:var(--green)}
+button.primary.stop{border-color:var(--red);color:var(--red)}
+button:disabled{opacity:.35;cursor:not-allowed}
+#btnRecord{flex:2} #btnPin{flex:1}
+.btns{display:flex;gap:8px;margin-top:10px}
+.btns button{flex:1}
+.switch{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);cursor:pointer;user-select:none}
+.switch input{appearance:none;width:34px;height:16px;border:1px solid var(--faint);position:relative;cursor:pointer;background:transparent;flex:none}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;background:var(--dim);transition:.15s}
+.switch input:checked{border-color:var(--green)}
+.switch input:checked::after{left:20px;background:var(--green)}
+.stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center}
+.stats .cell{text-align:center}
+.stats b{font-size:16px}
+.note{font-size:10px;color:var(--dim);margin-top:8px;line-height:1.7}
+#logList{font-size:10px;line-height:1.9;max-height:180px;overflow-y:auto;color:var(--ink)}
+#logList .empty{color:var(--dim)}
+#logList .sys{color:var(--amber)}
+#logList .t{color:var(--faint)}
+.wp{width:12px;height:12px;background:var(--amber);border:1px solid #000;transform:rotate(45deg);box-shadow:0 0 6px rgba(255,179,0,.8)}
+#map{flex:1;min-width:0}
+.leaflet-control-attribution{background:rgba(6,9,7,.85)!important;color:var(--dim)!important;font-size:9px!important}
+.leaflet-control-attribution a{color:var(--dim)!important}
+.leaflet-bar a{background:var(--panel)!important;color:var(--ink)!important;border-color:var(--line)!important}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--amber);
+  color:var(--amber);padding:8px 16px;font-size:11px;letter-spacing:1px;opacity:0;pointer-events:none;transition:.25s;z-index:1000}
+#toast.show{opacity:1}
+@media (max-width:880px){
+  body{overflow:auto}
+  main{flex-direction:column}
+  #map{order:1;height:48vh;flex:none}
+  aside{order:2;width:100%;min-width:0;border-right:none;border-top:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>轨迹测绘仪</h1>
+    <p>FIELD TRACKER / GPS RECORDER</p>
+  </div>
+  <div class="hdr-right"><span class="badge" id="hdrStatus">待命 STANDBY</span></div>
+</header>
+
+<main>
+  <aside>
+    <section class="sec">
+      <h2><span class="num">01</span>定位读数 · POSITION <span class="gps" id="gpsState">SEARCH…</span></h2>
+      <div class="grid">
+        <div class="cell"><label>纬度 LAT</label><b id="lat">--.------°</b></div>
+        <div class="cell"><label>经度 LNG</label><b id="lng">--.------°</b></div>
+        <div class="cell"><label>海拔 ALT</label><b id="alt">--</b></div>
+        <div class="cell"><label>精度 ACC</label><b id="acc">--</b></div>
+        <div class="cell"><label>速度 SPD</label><b id="spd">--</b></div>
+        <div class="cell"><label>更新 UPD</label><b id="upd">--:--:--</b></div>
+      </div>
+      <div id="satMsg">正在搜索卫星信号……</div>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">02</span>记录控制 · CONTROL</h2>
+      <div class="btns">
+        <button class="primary" id="btnRecord">▶ 开始记录</button>
+        <button id="btnPin" disabled>◈ 打点</button>
+      </div>
+      <div class="row">
+        <label class="switch">
+          <input type="checkbox" id="followToggle" checked>
+          <span>地图自动跟随当前位置</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">03</span>会话数据 · DATA</h2>
+      <div class="stats">
+        <div class="cell"><label>轨迹点</label><b id="stPoints">0</b></div>
+        <div class="cell"><label>总距离</label><b id="stDist">0 m</b></div>
+        <div class="cell"><label>记录时长</label><b id="stDur">00:00:00</b></div>
+      </div>
+      <div class="btns">
+        <button id="btnCopy">复制 JSON</button>
+        <button id="btnClear">清除轨迹</button>
+      </div>
+      <p class="note">数据以 JSON 存于 sessionStorage：同一会话内刷新页面不丢失，关闭标签页后自动清除。定位需在 HTTPS 或 localhost 环境下运行。</p>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">04</span>轨迹日志 · LOG</h2>
+      <div id="logList"><div class="empty">暂无记录——点击「开始记录」后，<br>每一个定位点都将写入此处。</div></div>
+    </section>
+  </aside>
+
+  <div id="map"></div>
+</main>
+
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ============================================================
+   底图：Esri World Street Map（免 API KEY，已替换原 Carto）
+   注意占位符为 {z}/{y}/{x}（行在前），不要改回 {z}/{x}/{y}
+   ============================================================ */
+const map = L.map('map', {zoomControl: true}).setView([30.0, 110.0], 4);
+
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom'
+}).addTo(map);
+
+/* ================= 状态 ================= */
+const $ = id => document.getElementById(id);
+const STORAGE_KEY = 'field-tracker-v1';
+
+let fix = null;            // 最新定位
+let recording = false;
+let startTime = null;
+let elapsedMs = 0;
+let points = [];           // 轨迹点
+let waypoints = [];        // 手动打点
+let distance = 0;          // 总里程（米）
+let logEntries = [];
+let timerId = null;
+
+const trackLine    = L.polyline([], {color:'#ff5349', weight:3, opacity:.9}).addTo(map);
+const waypointLayer= L.layerGroup().addTo(map);
+const hereDot      = L.circleMarker([0,0], {radius:6,  color:'#ffb300', weight:2, fillColor:'#ffb300', fillOpacity:.95}).addTo(map);
+const hereRing     = L.circleMarker([0,0], {radius:16, color:'#ffb300', weight:1, opacity:0,   fill:false}).addTo(map);
+hereDot.setStyle({opacity:0});
+
+/* ================= 工具 ================= */
+const pad = n => String(n).padStart(2,'0');
+const fmtTime = d => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const fmtDur  = ms => {
+  const s = Math.floor(ms/1000);
+  return `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`;
+};
+function hav(a, b){ // Haversine 两点球面距离（米）
+  const R = 6371000, r = Math.PI/180;
+  const dLa = (b.lat-a.lat)*r, dLo = (b.lng-a.lng)*r;
+  const s = Math.sin(dLa/2)**2 + Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+/* ================= 日志 ================= */
+function renderLog(){
+  const box = $('logList');
+  if(!logEntries.length){
+    box.innerHTML = '<div class="empty">暂无记录——点击「开始记录」后，<br>每一个定位点都将写入此处。</div>';
+    return;
+  }
+  box.innerHTML = logEntries.slice().reverse().map(e =>
+    `<div class="${e.cls||''}"><span class="t">[${e.time}]</span> ${e.text}</div>`
+  ).join('');
+  box.scrollTop = 0;
+}
+function log(text, cls){
+  logEntries.push({time: fmtTime(new Date()), text, cls: cls||''});
+  if(logEntries.length > 300) logEntries = logEntries.slice(-300);
+  renderLog();
+}
+
+/* ================= 状态灯 ================= */
+function setStatus(mode){
+  const b = $('hdrStatus');
+  if(mode === 'rec'){ b.textContent = '记录中 RECORDING'; b.classList.add('rec'); }
+  else{ b.textContent = '待命 STANDBY'; b.classList.remove('rec'); }
+}
+function setGps(mode, text){
+  $('gpsState').className = 'gps' + (mode==='lock' ? ' lock' : mode==='err' ? ' err' : '');
+  $('gpsState').textContent = text;
+}
+
+/* ================= 定位 ================= */
+function moveHere(lat, lng, acc){
+  hereDot.setLatLng([lat,lng]).setStyle({opacity:1});
+  hereRing.setLatLng([lat,lng]).setStyle({opacity:.45});
+  $('lat').textContent = lat.toFixed(6) + '°';
+  $('lng').textContent = lng.toFixed(6) + '°';
+  $('acc').textContent = acc != null ? acc.toFixed(0) + ' m' : '--';
+}
+
+function onFix(pos){
+  const c = pos.coords;
+  fix = {lat:c.latitude, lng:c.longitude, acc:c.accuracy, alt:c.altitude, spd:c.speed};
+  moveHere(fix.lat, fix.lng, fix.acc);
+  setGps('lock','LOCK');
+  $('satMsg').classList.add('ok');
+  $('alt').textContent = c.altitude != null ? c.altitude.toFixed(0) + ' m' : '--';
+  $('spd').textContent = c.speed    != null ? (c.speed*3.6).toFixed(1) + ' km/h' : '--';
+  $('upd').textContent = fmtTime(new Date(pos.timestamp));
+  $('btnPin').disabled = false;
+
+  if(recording) appendTrack();
+  if($('followToggle').checked) map.setView([fix.lat, fix.lng], map.getZoom(), {animate:true});
+  save();
+}
+
+function onGpsErr(err){
+  setGps('err','NO FIX');
+  $('satMsg').classList.remove('ok');
+  const why = {1:'权限被拒绝', 2:'位置不可用', 3:'请求超时'}[err.code] || err.message;
+  $('satMsg').textContent = '定位失败：' + why + '……重试中';
+}
+
+if('geolocation' in navigator){
+  navigator.geolocation.watchPosition(onFix, onGpsErr,
+    {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+}else{
+  setGps('err','NO GPS');
+  $('satMsg').textContent = '当前设备/浏览器不支持定位';
+}
+
+/* ================= 轨迹 ================= */
+function appendTrack(){
+  const p = {lat:fix.lat, lng:fix.lng, t:Date.now(), acc:fix.acc, alt:fix.alt, spd:fix.spd};
+  if(points.length){
+    const seg = hav(points[points.length-1], p);
+    if(seg < 2) return;               // 静止抖动过滤
+    distance += seg;
+  }
+  points.push(p);
+  trackLine.addLatLng([p.lat, p.lng]);
+  log(`● 定位点 #${points.length}　${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}　±${p.acc!=null?p.acc.toFixed(0):'?'}m`);
+  renderStats();
+}
+
+$('btnPin').addEventListener('click', ()=>{
+  if(!fix) return;
+  const w = {lat:fix.lat, lng:fix.lng, t:Date.now()};
+  waypoints.push(w);
+  addWaypointMarker(w);
+  log(`◆ 打点 #${waypoints.length}　${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`, 'sys');
+  save();
+});
+
+function addWaypointMarker(w){
+  L.marker([w.lat, w.lng], {
+    icon: L.divIcon({className:'', html:'<div class="wp"></div>', iconSize:[12,12], iconAnchor:[6,6]})
+  }).addTo(waypointLayer).bindPopup('打点 ' + fmtTime(new Date(w.t)));
+}
+
+/* ================= 统计 / 记录 ================= */
+function currentElapsed(){ return elapsedMs + (recording && startTime ? Date.now()-startTime : 0); }
+function renderStats(){
+  $('stPoints').textContent = points.length;
+  $('stDist').textContent = distance >= 1000 ? (distance/1000).toFixed(2)+' km' : Math.round(distance)+' m';
+  $('stDur').textContent  = fmtDur(currentElapsed());
+}
+function startTimer(){ clearInterval(timerId); timerId = setInterval(renderStats, 1000); }
+function stopTimer(){ clearInterval(timerId); }
+
+$('btnRecord').addEventListener('click', ()=>{
+  if(!recording){
+    recording = true; startTime = Date.now();
+    setStatus('rec');
+    $('btnRecord').textContent = '■ 停止记录';
+    $('btnRecord').classList.add('stop');
+    log('— 开始记录 —','sys');
+    startTimer();
+  }else{
+    recording = false;
+    elapsedMs = currentElapsed(); startTime = null;
+    setStatus('standby');
+    $('btnRecord').textContent = '▶ 开始记录';
+    $('btnRecord').classList.remove('stop');
+    stopTimer();
+    log('— 停止记录 —','sys');
+    renderStats(); save();
+  }
+});
+
+/* ================= 复制 / 清除 ================= */
+$('btnCopy').addEventListener('click', async ()=>{
+  const payload = {
+    device: 'FIELD TRACKER',
+    exportedAt: new Date().toISOString(),
+    trackPointCount: points.length,
+    totalDistanceMeters: +distance.toFixed(1),
+    durationMs: Math.round(currentElapsed()),
+    points, waypoints
+  };
+  const text = JSON.stringify(payload, null, 2);
+  try{ await navigator.clipboard.writeText(text); toast('JSON 已复制到剪贴板'); }
+  catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); toast('JSON 已复制到剪贴板'); }
+    catch(_){ toast('复制失败，请手动复制'); }
+    ta.remove();
+  }
+});
+
+$('btnClear').addEventListener('click', ()=>{
+  if(!confirm('确认清除全部轨迹、打点与日志？')) return;
+  points = []; waypoints = []; distance = 0; elapsedMs = 0;
+  if(recording){
+    recording = false; startTime = null; stopTimer();
+    setStatus('standby');
+    $('btnRecord').textContent = '▶ 开始记录';
+    $('btnRecord').classList.remove('stop');
+  }
+  trackLine.setLatLngs([]);
+  waypointLayer.clearLayers();
+  renderStats(); renderLog(); save();
+  toast('轨迹已清除');
+});
+
+/* ================= sessionStorage 持久化 ================= */
+function save(){
+  try{
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      points, waypoints, distance,
+      elapsedMs: Math.round(currentElapsed()),
+      log: logEntries,
+      follow: $('followToggle').checked
+    }));
+  }catch(e){}
+}
+function restore(){
+  try{
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if(!raw) return;
+    const d = JSON.parse(raw);
+    points    = d.points    || [];
+    waypoints = d.waypoints || [];
+    distance  = d.distance  || 0;
+    elapsedMs = d.elapsedMs || 0;
+    logEntries = d.log || [];
+    $('followToggle').checked = d.follow !== false;
+    trackLine.setLatLngs(points.map(p=>[p.lat, p.lng]));
+    waypoints.forEach(addWaypointMarker);
+    if(points.length){
+      const last = points[points.length-1];
+      moveHere(last.lat, last.lng, last.acc);
+      map.setView([last.lat, last.lng], 16);
+      $('satMsg').classList.add('ok');
+      setGps('', 'RESTORED');
+      $('btnPin').disabled = false;
+    }
+    renderStats(); renderLog();
+  }catch(e){}
+}
+restore();
+window.addEventListener('load', ()=>setTimeout(()=>map.invalidateSize(), 120));
+</script>
+</body>
+</html>
